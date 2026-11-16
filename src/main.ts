@@ -1,3 +1,4 @@
+import { matchesShortcut, openSettings, shortcutLabel } from "./settings";
 import { initDashboard } from "./dashboard";
 import type { FileEditor, FileDocument } from "./editor";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -209,7 +210,7 @@ function renderProjects() {
   const add = document.createElement("span");
   add.className = "add";
   add.textContent = "+ 打开工程";
-  add.title = "选择一个文件夹作为工程 (Ctrl+Shift+O)";
+  add.title = `选择一个文件夹作为工程${shortcutLabel("openProject") ? ` (${shortcutLabel("openProject")})` : ""}`;
   add.onclick = () => void pickProject();
   for (const p of projects) {
     const c = p.chip;
@@ -252,22 +253,31 @@ new ResizeObserver(() => {
   if (tab && tab.kind !== "file") tab.fit.fit();
 }).observe($("terms"));
 $("cwd").onclick = () => { if (cur) void loadDir(cur.path); };
+$("settings").onclick = openSettings;
+function updateShortcutHints() {
+  $("kill-shortcut").textContent = shortcutLabel("killProcess") || "未设置快捷键";
+  $("settings").title = `设置快捷键${shortcutLabel("settings") ? ` (${shortcutLabel("settings")})` : ""}`;
+}
+updateShortcutHints();
+window.addEventListener("shortcuts-changed", () => { renderProjects(); updateShortcutHints(); armed = false; $("proc-msg").textContent = ""; });
 window.addEventListener("keydown", (ev) => {
-  if (ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === "s" && cur?.active?.kind === "file") {
-    ev.preventDefault();
-    void cur.active.editor.save();
-    return;
-  }
-  if (!ev.ctrlKey || !ev.shiftKey) return;
+  if (ev.repeat || ev.isComposing || document.querySelector("dialog[open]")) return;
   const p = cur;
-  if (ev.key === "O") { ev.preventDefault(); void pickProject(); }
-  else if (ev.key === "T" && p) { ev.preventDefault(); void openTab(p, "pi", cwd || p.path); }
-  else if (ev.key === "W" && p?.active) { ev.preventDefault(); void closeTab(p.active); }
-  else if (ev.key === "Tab" && p && p.tabs.length > 1 && p.active) {
-    ev.preventDefault();
-    selectTab(p.tabs[(p.tabs.indexOf(p.active) + 1) % p.tabs.length]);
+  let run: (() => void) | undefined;
+  if (matchesShortcut(ev, "settings")) run = openSettings;
+  else if (matchesShortcut(ev, "openProject")) run = () => { void pickProject(); };
+  else if (matchesShortcut(ev, "newPi") && p) run = () => { void openTab(p, "pi", cwd || p.path); };
+  else if (matchesShortcut(ev, "newShell") && p) run = () => { void openTab(p, "shell", cwd || p.path); };
+  else if (matchesShortcut(ev, "closeTab") && p?.active) run = () => { void closeTab(p.active!); };
+  else if (matchesShortcut(ev, "saveFile") && p?.active?.kind === "file") {
+    const editor = p.active.editor;
+    run = () => { void editor.save(); };
+  } else if (matchesShortcut(ev, "openExplorer") && cwd) run = () => $("open-explorer").click();
+  else if (matchesShortcut(ev, "nextTab") && p && p.tabs.length > 1 && p.active) {
+    run = () => selectTab(p.tabs[(p.tabs.indexOf(p.active!) + 1) % p.tabs.length]);
   }
-});
+  if (run) { ev.preventDefault(); ev.stopPropagation(); run(); }
+}, { capture: true });
 
 async function start() {
   // Restore the last session's projects. Terminals are only spawned when a project is first shown.
@@ -335,6 +345,11 @@ async function loadDir(path: string) {
 $("file-filter").oninput = () => {
   const filter = $<HTMLInputElement>("file-filter").value.trim().toLowerCase();
   for (const li of $("files").children) (li as HTMLElement).hidden = !!(li as HTMLElement).dataset.name && !(li as HTMLElement).dataset.name!.includes(filter);
+};
+$("open-explorer").onclick = async () => {
+  if (!cwd) return;
+  try { await invoke("open_in_explorer", { path: cwd }); }
+  catch (error) { explorerMessage(`无法打开资源管理器：${error}`, true); }
 };
 $("refresh-files").onclick = () => { if (cwd) void loadDir(cwd); };
 $("up-directory").onclick = () => { if (cwd) void loadDir(parent(cwd)); };
@@ -416,13 +431,13 @@ for (const k of ["cpu", "mem"] as const) {
     void refresh();
   };
 }
-// k kills the selected process, but only after a second confirming press.
-// Ignore editing controls and dialogs so typing cannot kill a process.
+// Ending a process requires a second press; ignore editing controls and dialogs.
 window.addEventListener("keydown", async (e) => {
-  if (e.key !== "k" || selPid === null || (e.target instanceof Element && e.target.closest("input, textarea, [contenteditable], dialog"))) return;
+  if (e.repeat || !matchesShortcut(e, "killProcess") || document.querySelector("dialog[open]") || selPid === null || (e.target instanceof Element && e.target.closest("input, textarea, [contenteditable], dialog"))) return;
   const p = procs.find((x) => x.pid === selPid);
   if (!p) return;
-  if (!armed) { armed = true; $("proc-msg").textContent = `再按 k 确认结束 ${p.name} (${p.pid})`; return; }
+  e.preventDefault();
+  if (!armed) { armed = true; $("proc-msg").textContent = `再按 ${shortcutLabel("killProcess")} 确认结束 ${p.name} (${p.pid})`; return; }
   armed = false;
   const ok = await invoke<boolean>("kill_process", { pid: p.pid });
   $("proc-msg").textContent = ok ? `已结束 ${p.pid}` : `无法结束 ${p.pid}`;

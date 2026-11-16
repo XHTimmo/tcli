@@ -21,8 +21,8 @@ button { background: #222832; color: var(--fg); border: 1px solid var(--line); b
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: default; }
 button:focus-visible, input:focus-visible, #files li:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.explorer-actions { display: flex; gap: 4px; padding: 6px; }
-.explorer-actions button { font-size: 11px; flex: 1; white-space: nowrap; }
+.explorer-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; }
+.explorer-actions button { font-size: 11px; flex: 1 1 40%; white-space: nowrap; }
 #file-filter { margin: 0 6px 6px; min-width: 0; padding: 5px; background: #1c1f26; color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font: inherit; }
 #explorer-message { padding: 4px 8px; overflow-wrap: anywhere; max-height: 100px; overflow-y: auto; }
 #explorer-message:empty { display: none; }
@@ -45,6 +45,11 @@ button:focus-visible, input:focus-visible, #files li:focus-visible { outline: 1p
 .file-image { display: block; max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; padding: 12px; }
 #tabs .dirty .t { color: #e5c07b; }
 .save-dialog { max-width: min(480px, 90vw); background: #1c1f26; color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 20px; }
+.settings-dialog { width: min(600px, 90vw); max-width: 600px; max-height: 85vh; overflow-y: auto; }
+.settings-dialog p { white-space: normal; }
+.shortcut-fields { display: grid; gap: 10px; }
+.shortcut-fields label { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.shortcut-fields input { width: 190px; max-width: 50%; padding: 7px 9px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font: inherit; cursor: pointer; }
 .save-dialog::backdrop { background: #0009; }
 .save-dialog h3 { margin-top: 0; }
 .save-dialog p { overflow-wrap: anywhere; max-height: 30vh; overflow-y: auto; }
@@ -99,8 +104,15 @@ header.sub { border-top: 1px solid var(--line); }
 .row { display: grid; grid-template-columns: 52px 1fr 48px 62px; gap: 4px; padding: 1px 8px; }
 .row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .n { text-align: right; }
-#projects { background: #1c1f26; }
-#projects .tab.on { box-shadow: inset 0 -2px #e5c07b; }
+#projects { background: #1c1f26; font-size: 13px; }
+#projects .tab { display: flex; align-items: center; gap: 10px; min-height: 36px; max-width: 240px; padding: 6px 12px; flex: none; cursor: pointer; white-space: nowrap; border-right: 1px solid var(--line); color: var(--dim); }
+#projects .tab .t { overflow: hidden; text-overflow: ellipsis; }
+#projects .tab:hover, #projects .add:hover { background: #20242c; }
+#projects .tab.on { color: var(--fg); background: #20242c; box-shadow: inset 0 -2px #e5c07b; }
+#projects .tab .x { display: flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; border-radius: 4px; }
+#projects .tab .x:hover { color: #e06c75; background: #30242b; }
+#projects .add { display: flex; align-items: center; flex: none; min-height: 36px; padding: 6px 14px; cursor: pointer; color: var(--dim); white-space: nowrap; }
+#projects .add:hover { color: var(--accent); }
 #cwd { cursor: pointer; }
 .route-flow { display: grid; grid-template-columns: minmax(38px, .8fr) minmax(28px, 1fr) 54px minmax(28px, 1fr) minmax(50px, 1.3fr); align-items: center; margin: 10px 0 6px; font-size: 10px; }
 .flow-node { position: relative; padding: 3px 5px; border: 1px solid var(--line); border-radius: 5px; text-align: center; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; background: var(--bg); transition: border-color .25s, color .25s, box-shadow .25s; }

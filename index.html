@@ -12,6 +12,7 @@
         <button id="up-directory" title="上一级目录">上一级</button>
         <button id="refresh-files" title="刷新文件列表">刷新</button>
         <button id="open-file" title="选择文件打开">打开文件</button>
+        <button id="open-explorer" title="在系统资源管理器中打开当前目录">资源管理器</button>
       </div>
       <input id="file-filter" type="search" placeholder="筛选当前目录…" aria-label="筛选文件" />
       <ul id="files"></ul>
@@ -29,7 +30,7 @@
         <div id="cores"></div>
         <div id="meters"></div>
         <header class="sub">进程 <small id="proc-count"></small>
-          <small class="sorts">排序: <a id="s-cpu" class="on">CPU</a> <a id="s-mem">内存</a> · k 结束</small></header>
+          <small class="sorts">排序: <a id="s-cpu" class="on">CPU</a> <a id="s-mem">内存</a> · <span id="kill-shortcut">K</span> 结束</small></header>
         <ul id="procs"></ul>
         <footer id="proc-msg"></footer>
       </section>
@@ -39,6 +40,7 @@
       </section>
       <footer id="app-update">
         <span id="build-mode" class="dim">检查版本…</span>
+        <button id="settings" title="设置快捷键">设置</button>
         <button id="update-app" hidden>更新并重启</button>
       </footer>
     </aside>

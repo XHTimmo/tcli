@@ -59,6 +59,7 @@ fn image_mime(path: &Path) -> Option<&'static str> {
         "webp" => Some("image/webp"),
         "bmp" => Some("image/bmp"),
         "ico" => Some("image/x-icon"),
+        "svg" => Some("image/svg+xml"),
         _ => None,
     }
 }
@@ -75,6 +76,41 @@ fn read_document(path: &Path) -> Result<FileDocument, String> {
         ("text", text.replace("\r\n", "\n"), format!("UTF-8{} · {}", if bom { " BOM" } else { "" }, if crlf { "CRLF" } else { "LF" }))
     };
     Ok(FileDocument { path: path.to_string_lossy().into_owned(), kind, content, revision, format })
+}
+
+#[tauri::command]
+pub fn open_in_explorer(path: String) -> Result<(), String> {
+    let path = fs::canonicalize(path).map_err(crate::err)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // Explorer does not handle the extended-length prefix returned by canonicalize.
+        let text = path.to_string_lossy();
+        let shell_path = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{unc}")
+        } else {
+            text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+        };
+        let mut command = std::process::Command::new("explorer.exe");
+        if path.is_dir() {
+            command.arg(&shell_path);
+        } else {
+            command.raw_arg(format!("/select,\"{shell_path}\""));
+        }
+        command.spawn().map_err(crate::err)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        if path.is_file() { command.arg("-R"); }
+        command.arg(&path).spawn().map_err(crate::err)?;
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let directory = if path.is_dir() { path.as_path() } else { path.parent().ok_or("文件路径无效")? };
+        std::process::Command::new("xdg-open").arg(directory).spawn().map_err(crate::err)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

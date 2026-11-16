@@ -1,3 +1,4 @@
+import { shortcutLabel } from "./settings";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { basicSetup } from "codemirror";
@@ -35,6 +36,9 @@ export class FileEditor {
   private saving: Promise<boolean> | null = null;
   private loading = false;
   private disposed = false;
+  private updateShortcutHint = () => {
+    this.saveButton.title = `保存${shortcutLabel("saveFile") ? ` (${shortcutLabel("saveFile")})` : ""}`;
+  };
 
   constructor(doc: FileDocument, private changed: () => void) {
     this.doc = doc;
@@ -44,16 +48,23 @@ export class FileEditor {
     const toolbar = element("div", "editor-toolbar");
     const path = element("span", "editor-path", doc.path.replace(/^\\\\\?\\/, ""));
     path.title = doc.path;
-    this.saveButton.title = "保存 (Ctrl+S)";
+    this.saveButton.title = "保存";
     this.saveButton.onclick = () => void this.save();
     this.reloadButton.onclick = () => void this.reload();
-    toolbar.append(path, this.reloadButton, this.saveButton);
+    const revealButton = element("button", "", "资源管理器");
+    revealButton.title = "在系统资源管理器中显示此文件";
+    revealButton.onclick = async () => {
+      try { await invoke("open_in_explorer", { path: this.path }); }
+      catch (error) { this.notify(`无法打开资源管理器：${error}`, true); }
+    };
+    toolbar.append(path, revealButton, this.reloadButton, this.saveButton);
     this.message.setAttribute("role", "status");
     this.message.hidden = true;
     const footer = element("div", "editor-footer");
     footer.append(this.status, this.position);
     this.el.append(toolbar, this.message, this.body, footer);
     this.mount();
+    window.addEventListener("shortcuts-changed", this.updateShortcutHint);
   }
 
   get dirty() { return !!this.view && this.view.state.doc.toString() !== this.savedContent; }
@@ -67,6 +78,7 @@ export class FileEditor {
 
   private update() {
     this.saveButton.hidden = this.doc.kind !== "text";
+    this.updateShortcutHint();
     this.saveButton.disabled = !this.dirty || this.busy;
     this.saveButton.textContent = this.saving ? "保存中…" : "保存";
     this.reloadButton.disabled = this.busy;
@@ -100,7 +112,7 @@ export class FileEditor {
             basicSetup, oneDark, this.language.of([]),
             this.editable.of([]),
             EditorView.contentAttributes.of({ "aria-label": `编辑 ${fileName(this.path)}` }),
-            keymap.of([{ key: "Mod-s", run: () => { void this.save(); return true; } }, indentWithTab]),
+            keymap.of([indentWithTab]),
             EditorView.updateListener.of(update => {
               if (update.docChanged) this.notify();
               if (update.docChanged || update.selectionSet) this.update();
@@ -169,7 +181,12 @@ export class FileEditor {
     }
   }
 
-  dispose() { this.disposed = true; this.view?.destroy(); this.el.remove(); }
+  dispose() {
+    this.disposed = true;
+    window.removeEventListener("shortcuts-changed", this.updateShortcutHint);
+    this.view?.destroy();
+    this.el.remove();
+  }
 }
 
 /** Resolve unsaved edits before a tab, project, window, or update closes the editors. */
