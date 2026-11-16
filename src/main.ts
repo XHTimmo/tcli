@@ -1,4 +1,6 @@
-import { matchesShortcut, openSettings, shortcutLabel } from "./settings";
+import { ensurePi } from "./pi";
+import { FileTree } from "./file-tree";
+import { explorerMode, matchesShortcut, openSettings, shortcutLabel } from "./settings";
 import { initDashboard } from "./dashboard";
 import type { FileEditor, FileDocument } from "./editor";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -37,6 +39,13 @@ function save() {
 }
 
 async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
+  let piPath: string | null = null;
+  try {
+    if (kind === "pi") {
+      piPath = await ensurePi();
+      if (!piPath || !projects.includes(p)) return;
+    }
+  } catch (error) { explorerMessage(`无法配置 pi：${error}`, true); return; }
   const id = nextId++;
   const el = document.createElement("div");
   el.className = "pane hidden";
@@ -73,7 +82,16 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
   onData.onmessage = (buf) => term.write(new Uint8Array(buf));
   term.onData((d) => void invoke("pty_write", { id, data: d }));
   term.onResize(({ cols, rows }) => void invoke("pty_resize", { id, cols, rows }));
-  await invoke("pty_spawn", { id, kind, cols: term.cols, rows: term.rows, cwd: dir, onData });
+  try {
+    await invoke("pty_spawn", { id, kind, cols: term.cols, rows: term.rows, cwd: dir, piPath, onData });
+  } catch (error) {
+    term.dispose();
+    el.remove();
+    p.tabs = p.tabs.filter(t => t !== tab);
+    if (p.active === tab) p.active = p.tabs.at(-1) ?? null;
+    showActive();
+    explorerMessage(`无法启动 ${kind}：${error}。可在设置中检查 pi 路径。`, true);
+  }
 }
 
 /** Show only the current project's active tab; every other pane stays hidden. */
@@ -168,8 +186,9 @@ async function switchProject(p: Project) {
   cur = p;
   save();
   renderProjects();
-  if (!p.tabs.length) { await openTab(p, "pi", p.path); } else showActive();
+  showActive();
   void loadDir(p.dir);
+  if (!p.tabs.length) await openTab(p, "pi", p.path);
 }
 
 async function openProject(path: string) {
@@ -196,7 +215,7 @@ async function closeProject(p: Project) {
       cur = null;
       const next = projects[Math.min(i, projects.length - 1)];
       if (next) await switchProject(next);
-      else { cwd = ""; $("cwd").textContent = ""; $("files").replaceChildren(); renderProjects(); renderTabs(); save(); }
+      else { tree?.dispose(); tree = null; ++directoryRequest; cwd = ""; $("cwd").textContent = ""; $("files").replaceChildren(); renderProjects(); renderTabs(); save(); }
     } else { renderProjects(); save(); }
   } finally { closing = false; }
 }
@@ -272,7 +291,7 @@ window.addEventListener("keydown", (ev) => {
   else if (matchesShortcut(ev, "saveFile") && p?.active?.kind === "file") {
     const editor = p.active.editor;
     run = () => { void editor.save(); };
-  } else if (matchesShortcut(ev, "openExplorer") && cwd) run = () => $("open-explorer").click();
+  } else if (matchesShortcut(ev, "openExplorer") && cwd) run = () => { void revealInExplorer(cwd); };
   else if (matchesShortcut(ev, "nextTab") && p && p.tabs.length > 1 && p.active) {
     run = () => selectTab(p.tabs[(p.tabs.indexOf(p.active!) + 1) % p.tabs.length]);
   }
@@ -305,13 +324,45 @@ const parent = (p: string) => {
 };
 
 let directoryRequest = 0;
+let tree: FileTree | null = null;
+const expandedDirectories = new WeakMap<Project, Set<string>>();
+window.addEventListener("explorer-mode-changed", () => {
+  if (cur) void loadDir(cur.dir);
+});
 function explorerMessage(message: string, error = false) {
   $("explorer-message").textContent = message;
   $("explorer-message").classList.toggle("error", error);
 }
 async function loadDir(path: string) {
+  closeExplorerMenu();
   const request = ++directoryRequest;
   const project = cur;
+  tree?.dispose();
+  tree = null;
+  const treeMode = explorerMode() === "tree";
+  const ul = $("files");
+  ul.setAttribute("role", treeMode ? "tree" : "list");
+  ul.setAttribute("aria-label", treeMode ? "工程文件树" : "目录文件列表");
+  const filter = $<HTMLInputElement>("file-filter");
+  filter.value = "";
+  filter.placeholder = treeMode ? "筛选已加载的文件…" : "筛选当前目录…";
+  if (treeMode && project) {
+    path = project.path;
+    cwd = path;
+    $("cwd").textContent = path;
+    $("cwd").title = `${path}\n工程文件树 · 点击刷新`;
+    ul.replaceChildren();
+    explorerMessage("");
+    let expanded = expandedDirectories.get(project);
+    if (!expanded) { expanded = new Set(); expandedDirectories.set(project, expanded); }
+    const currentTree = new FileTree(ul, expanded,
+      (file, alt) => { if (alt) void insertPath(file); else void openFile(file); },
+      message => explorerMessage(message, true));
+    tree = currentTree;
+    try { await currentTree.load(path); }
+    catch (error) { if (request === directoryRequest && cur === project) explorerMessage(`无法读取目录：${error}`, true); }
+    return;
+  }
   let entries: Entry[];
   try { entries = await invoke<Entry[]>("list_dir", { path }); }
   catch (error) { if (request === directoryRequest && cur === project) explorerMessage(`无法读取目录：${error}`, true); return; }
@@ -322,11 +373,12 @@ async function loadDir(path: string) {
   $("cwd").textContent = path;
   $("cwd").title = `${path}\n点击返回工程目录`;
   $<HTMLInputElement>("file-filter").value = "";
-  const ul = $("files");
   ul.replaceChildren();
   const up = document.createElement("li");
   up.textContent = "..";
   up.className = "dir";
+  up.dataset.path = parent(path);
+  up.dataset.dir = "true";
   up.onclick = () => void loadDir(parent(path));
   ul.append(up);
   for (const e of entries) {
@@ -334,6 +386,8 @@ async function loadDir(path: string) {
     li.textContent = (e.dir ? "▸ " : "  ") + e.name;
     if (e.dir) li.className = "dir";
     li.dataset.name = e.name.toLowerCase();
+    li.dataset.path = join(path, e.name);
+    li.dataset.dir = String(e.dir);
     li.title = `${e.name}${e.dir ? "" : "\n点击打开 · Alt+点击插入路径到终端"}`;
     li.tabIndex = 0;
     const activate = (alt: boolean) => e.dir ? void loadDir(join(path, e.name)) : alt ? void insertPath(join(path, e.name)) : void openFile(join(path, e.name));
@@ -344,20 +398,95 @@ async function loadDir(path: string) {
 }
 $("file-filter").oninput = () => {
   const filter = $<HTMLInputElement>("file-filter").value.trim().toLowerCase();
+  if (tree) { tree.setFilter(filter); return; }
   for (const li of $("files").children) (li as HTMLElement).hidden = !!(li as HTMLElement).dataset.name && !(li as HTMLElement).dataset.name!.includes(filter);
 };
-$("open-explorer").onclick = async () => {
-  if (!cwd) return;
-  try { await invoke("open_in_explorer", { path: cwd }); }
+async function revealInExplorer(path: string) {
+  try { await invoke("open_in_explorer", { path }); }
   catch (error) { explorerMessage(`无法打开资源管理器：${error}`, true); }
-};
-$("refresh-files").onclick = () => { if (cwd) void loadDir(cwd); };
-$("up-directory").onclick = () => { if (cwd) void loadDir(parent(cwd)); };
-$("open-file").onclick = async () => {
+}
+async function pickFile() {
   if (!cur) return;
   const path = await open({ directory: false, multiple: false, defaultPath: cwd || cur.path, title: "打开文件" });
   if (typeof path === "string") await openFile(path);
-};
+}
+
+let explorerMenu: HTMLElement | null = null;
+let menuOrigin: HTMLElement | null = null;
+function closeExplorerMenu(restoreFocus = false) {
+  explorerMenu?.remove();
+  explorerMenu = null;
+  if (restoreFocus && menuOrigin?.isConnected) menuOrigin.focus();
+  menuOrigin = null;
+}
+function showExplorerMenu(event: MouseEvent) {
+  event.preventDefault();
+  closeExplorerMenu();
+  if (!cwd || !cur) return;
+  const row = (event.target as HTMLElement).closest<HTMLElement>("#files li");
+  const path = row?.dataset.path || cwd;
+  const directory = !row || row.dataset.dir === "true";
+  const currentDir = cwd;
+  const project = cur;
+  const menu = document.createElement("div");
+  menu.className = "explorer-menu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "文件操作");
+  menuOrigin = row || document.activeElement as HTMLElement;
+  const action = (label: string, run: () => unknown, enabled = true) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.type = "button";
+    button.setAttribute("role", "menuitem");
+    button.disabled = !enabled;
+    button.onclick = () => {
+      closeExplorerMenu(true);
+      if (cur !== project) return;
+      void Promise.resolve().then(run).catch(error => explorerMessage(`操作失败：${error}`, true));
+    };
+    menu.append(button);
+  };
+  if (row) action(directory ? tree ? tree.isExpanded(path) ? "折叠目录" : "展开目录" : "进入目录" : "打开文件",
+    () => directory ? tree ? tree.toggle(path) : loadDir(path) : openFile(path));
+  action("插入路径到终端", () => insertPath(path), !!cur.active && cur.active.kind !== "file");
+  action(directory ? "在资源管理器中打开" : "在资源管理器中定位", () => revealInExplorer(path));
+  menu.append(document.createElement("hr"));
+  action("选择文件打开…", pickFile);
+  action("刷新", () => loadDir(currentDir));
+  if (!tree) action("上一级目录", () => loadDir(parent(currentDir)), parent(currentDir) !== currentDir);
+  menu.onkeydown = key => {
+    const buttons = [...menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    if (key.key === "ArrowDown") next = (index + 1) % buttons.length;
+    else if (key.key === "ArrowUp") next = (index - 1 + buttons.length) % buttons.length;
+    else if (key.key === "Home") next = 0;
+    else if (key.key === "End") next = buttons.length - 1;
+    else if (key.key === "Escape" || key.key === "Tab") {
+      closeExplorerMenu(true);
+      if (key.key === "Escape") key.preventDefault();
+      key.stopPropagation();
+      return;
+    } else return;
+    key.preventDefault();
+    key.stopPropagation();
+    buttons[next]?.focus();
+  };
+  document.body.append(menu);
+  explorerMenu = menu;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(0, Math.min(event.clientX, window.innerWidth - rect.width))}px`;
+  menu.style.top = `${Math.max(0, Math.min(event.clientY, window.innerHeight - rect.height))}px`;
+  menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+}
+$("files").oncontextmenu = showExplorerMenu;
+$("cwd").oncontextmenu = showExplorerMenu;
+document.addEventListener("pointerdown", event => {
+  if (explorerMenu && !explorerMenu.contains(event.target as Node)) closeExplorerMenu();
+}, true);
+document.addEventListener("scroll", () => closeExplorerMenu(), true);
+window.addEventListener("resize", () => closeExplorerMenu());
+window.addEventListener("blur", () => closeExplorerMenu());
 async function insertPath(p: string) {
   const t = cur?.active;
   if (!t || t.kind === "file") { explorerMessage("请先选择一个终端标签，再用 Alt+点击插入路径。"); return; }

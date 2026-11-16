@@ -1,3 +1,5 @@
+import { configurePi } from "./pi";
+
 export const shortcutActions = [
   { id: "openProject", label: "打开工程", defaultKey: "Ctrl+Shift+O" },
   { id: "newPi", label: "新建 pi 终端", defaultKey: "Ctrl+Shift+T" },
@@ -12,6 +14,10 @@ export const shortcutActions = [
 export type ShortcutAction = typeof shortcutActions[number]["id"];
 type Bindings = Record<ShortcutAction, string>;
 const storageKey = "tcli.shortcuts";
+const explorerModeKey = "tcli.explorer-mode";
+export function explorerMode(): "list" | "tree" {
+  return localStorage.getItem(explorerModeKey) === "tree" ? "tree" : "list";
+}
 const defaults = () => Object.fromEntries(shortcutActions.map(a => [a.id, a.defaultKey])) as Bindings;
 let bindings = defaults();
 try {
@@ -39,7 +45,19 @@ export function openSettings() {
   const dialog = document.createElement("dialog");
   dialog.className = "save-dialog settings-dialog";
   const title = document.createElement("h3");
-  title.textContent = "设置 · 快捷键";
+  title.textContent = "设置";
+  const browserLabel = document.createElement("label");
+  browserLabel.className = "browser-setting";
+  browserLabel.textContent = "文件浏览模式";
+  const browserMode = document.createElement("select");
+  browserMode.append(new Option("列表（逐级进入目录）", "list"), new Option("树状（展开 / 折叠文件夹）", "tree"));
+  browserMode.value = explorerMode();
+  browserLabel.append(browserMode);
+  const shortcutTitle = document.createElement("h4");
+  shortcutTitle.textContent = "快捷键";
+  const piButton = document.createElement("button");
+  piButton.textContent = "pi 路径与安装…";
+  piButton.onclick = () => { void configurePi(); };
   const help = document.createElement("p");
   help.className = "dim";
   help.textContent = "点击输入框后按下快捷键。Backspace / Delete 清除，Esc 取消设置。除结束进程外，快捷键需包含 Ctrl、Alt 或 Meta。";
@@ -89,6 +107,7 @@ export function openSettings() {
   };
   button("恢复默认", () => {
     Object.assign(draft, defaults());
+    browserMode.value = "list";
     inputs.forEach((input, id) => { input.value = draft[id]; });
     message.textContent = "";
   });
@@ -103,13 +122,18 @@ export function openSettings() {
       }
       if (key) used.set(key, action.label);
     }
-    try { localStorage.setItem(storageKey, JSON.stringify(draft)); }
+    const modeChanged = browserMode.value !== explorerMode();
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(draft));
+      localStorage.setItem(explorerModeKey, browserMode.value);
+    }
     catch { message.textContent = "无法保存设置，请检查本机存储是否可用。"; return; }
     bindings = { ...draft };
     window.dispatchEvent(new Event("shortcuts-changed"));
+    if (modeChanged) window.dispatchEvent(new Event("explorer-mode-changed"));
     dialog.close();
   }).className = "primary";
-  dialog.append(title, help, form, message, actions);
+  dialog.append(title, browserLabel, piButton, shortcutTitle, help, form, message, actions);
   dialog.onclose = () => dialog.remove();
   document.body.append(dialog);
   dialog.showModal();

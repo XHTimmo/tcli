@@ -22,6 +22,7 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    pi_path: Option<String>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
     let pair = native_pty_system()
@@ -36,14 +37,16 @@ pub fn pty_spawn(
         }
         ("shell", false) => CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "sh".into())),
         (_, true) => {
-            let mut c = CommandBuilder::new("cmd.exe");
-            // ConPTY drops pi's mouse-reporting modes, so fullscreen mode turns the wheel into arrow
-            // keys. Regular mode lets xterm scroll its own scrollback instead.
-            c.args(["/c", "pi", "--tui-mode", "regular"]);
+            let path = crate::pi::resolve(pi_path)?;
+            let mut c = CommandBuilder::new("powershell.exe");
+            // Pass the selected path as data, never interpolate it into shell source.
+            c.env("TCLI_PI_EXEC", path);
+            // Regular mode lets xterm manage scrollback under ConPTY.
+            c.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& $env:TCLI_PI_EXEC --tui-mode regular"]);
             c
         }
         (_, false) => {
-            let mut c = CommandBuilder::new("pi");
+            let mut c = CommandBuilder::new(crate::pi::resolve(pi_path)?);
             c.args(["--tui-mode", "regular"]);
             c
         }

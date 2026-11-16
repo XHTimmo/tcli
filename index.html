@@ -8,16 +8,10 @@
   <body>
     <aside id="explorer">
       <header id="cwd"></header>
-      <div class="explorer-actions">
-        <button id="up-directory" title="上一级目录">上一级</button>
-        <button id="refresh-files" title="刷新文件列表">刷新</button>
-        <button id="open-file" title="选择文件打开">打开文件</button>
-        <button id="open-explorer" title="在系统资源管理器中打开当前目录">资源管理器</button>
-      </div>
       <input id="file-filter" type="search" placeholder="筛选当前目录…" aria-label="筛选文件" />
       <ul id="files"></ul>
       <div id="explorer-message" role="status"></div>
-      <div class="explorer-help dim">点击文件打开 · Alt+点击插入路径</div>
+      <div class="explorer-help dim">点击打开 · 右键操作 · Alt+点击插入路径</div>
     </aside>
     <main>
       <nav id="projects"></nav>

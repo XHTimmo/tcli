@@ -3,6 +3,7 @@
 mod pty;
 mod magpie;
 mod files;
+mod pi;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -145,6 +146,7 @@ fn main() {
         .manage(App { ptys: Mutex::new(HashMap::new()), sys: Mutex::new(System::new().expect("sysinfo")) })
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn, pty::pty_write, pty::pty_resize, pty::pty_close, list_dir, sys_snapshot, kill_process, home_dir,
+            pi::detect_pi, pi::install_pi,
             magpie::magpie_routes, files::read_file, files::save_file, files::open_in_explorer
         ])
         .run(tauri::generate_context!())
