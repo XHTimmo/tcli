@@ -3962,6 +3962,7 @@ version = "0.1.0"
 dependencies = [
  "portable-pty",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sysinfo",

@@ -137,6 +137,7 @@ mod tests {
 }
 
 fn main() {
+    rustls::crypto::ring::default_provider().install_default().expect("rustls crypto provider");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
