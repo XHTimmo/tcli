@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>tcli</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <aside id="explorer">
+      <header id="cwd"></header>
+      <ul id="files"></ul>
+    </aside>
+    <main>
+      <nav id="projects"></nav>
+      <nav id="tabs"></nav>
+      <div id="terms"></div>
+    </main>
+    <aside id="side">
+      <section id="procs-box">
+        <header>系统 <small id="uptime"></small></header>
+        <div id="cores"></div>
+        <div id="meters"></div>
+        <header class="sub">进程 <small id="proc-count"></small>
+          <small class="sorts">排序: <a id="s-cpu" class="on">CPU</a> <a id="s-mem">内存</a> · k 结束</small></header>
+        <ul id="procs"></ul>
+        <footer id="proc-msg"></footer>
+      </section>
+      <section id="stats-box">
+        <header>Magpie 路由 <small id="magpie-status">连接中…</small></header>
+        <ul id="routes"><li class="dim">正在读取路由…</li></ul>
+      </section>
+      <footer id="app-update">
+        <span id="build-mode" class="dim">检查版本…</span>
+        <button id="update-app" hidden>更新并重启</button>
+      </footer>
+    </aside>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
