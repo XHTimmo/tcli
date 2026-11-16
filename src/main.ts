@@ -1,4 +1,6 @@
 import { initDashboard } from "./dashboard";
+import type { FileEditor, FileDocument } from "./editor";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { Channel, invoke } from "@tauri-apps/api/core";
@@ -7,11 +9,16 @@ import "@xterm/xterm/css/xterm.css";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-// ---- projects: a folder with its own set of tabs; each tab is a pty running pi or a shell ----
-interface Tab {
+// ---- projects: a folder with terminal and file tabs ----
+interface TerminalTab {
   id: number; kind: "pi" | "shell"; project: Project;
   term: Terminal; fit: FitAddon; el: HTMLElement; tabEl: HTMLElement;
 }
+interface FileTab {
+  id: number; kind: "file"; project: Project;
+  editor: FileEditor; el: HTMLElement; tabEl: HTMLElement;
+}
+type Tab = TerminalTab | FileTab;
 interface Project {
   path: string; tabs: Tab[]; active: Tab | null;
   dir: string; // directory the explorer last showed for this project
@@ -78,7 +85,8 @@ function showActive() {
     }
   }
   renderTabs();
-  if (shown) { shown.fit.fit(); shown.term.focus(); }
+  if (shown?.kind === "file") shown.editor.focus();
+  else if (shown) { shown.fit.fit(); shown.term.focus(); }
 }
 
 function selectTab(tab: Tab) {
@@ -87,15 +95,72 @@ function selectTab(tab: Tab) {
   showActive();
 }
 
+async function confirmClose(editors: FileEditor[]) {
+  if (!editors.length) return true;
+  return (await import("./editor")).confirmClose(editors);
+}
+const fileEditors = (tabs: Tab[]) => tabs.flatMap(tab => tab.kind === "file" ? [tab.editor] : []);
+let closing = false;
+async function disposeTab(tab: Tab) {
+  if (tab.kind === "file") tab.editor.dispose();
+  else {
+    await invoke("pty_close", { id: tab.id });
+    tab.term.dispose();
+    tab.el.remove();
+  }
+}
 async function closeTab(tab: Tab) {
-  const p = tab.project;
-  const i = p.tabs.indexOf(tab);
-  p.tabs.splice(i, 1);
-  await invoke("pty_close", { id: tab.id });
-  tab.term.dispose();
-  tab.el.remove();
-  if (p.active === tab) p.active = p.tabs[Math.min(i, p.tabs.length - 1)] ?? null;
-  showActive();
+  if (closing) return;
+  closing = true;
+  try {
+    if (!(await confirmClose(fileEditors([tab])))) return;
+    const p = tab.project;
+    const i = p.tabs.indexOf(tab);
+    if (i < 0) return;
+    await disposeTab(tab);
+    p.tabs.splice(i, 1);
+    if (p.active === tab) p.active = p.tabs[Math.min(i, p.tabs.length - 1)] ?? null;
+    showActive();
+  } finally { closing = false; }
+}
+
+let fileRequest = 0;
+async function openFile(path: string) {
+  const request = ++fileRequest;
+  const project = cur;
+  if (!project) return;
+  explorerMessage("正在读取文件…");
+  try {
+    const [doc, { FileEditor }] = await Promise.all([
+      invoke<FileDocument>("read_file", { path }), import("./editor"),
+    ]);
+    if (!projects.includes(project)) return;
+    const existing = project.tabs.find(tab => tab.kind === "file" && tab.editor.path === doc.path);
+    if (existing) { if (cur === project && request === fileRequest) selectTab(existing); explorerMessage(""); return; }
+    const tabEl = document.createElement("div");
+    tabEl.className = "tab file-tab";
+    const title = document.createElement("span");
+    title.className = "t";
+    title.title = doc.path;
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "×";
+    let editor: FileEditor | undefined;
+    const updateTitle = () => {
+      title.textContent = `${editor?.dirty ? "● " : ""}${base(doc.path)}`;
+      tabEl.classList.toggle("dirty", editor?.dirty ?? false);
+    };
+    editor = new FileEditor(doc, updateTitle);
+    updateTitle();
+    const tab: FileTab = { id: nextId++, kind: "file", project, editor, el: editor.el, tabEl };
+    tabEl.append(title, x);
+    tabEl.onclick = () => selectTab(tab);
+    x.onclick = event => { event.stopPropagation(); void closeTab(tab); };
+    $("terms").append(editor.el);
+    project.tabs.push(tab);
+    if (cur === project && request === fileRequest) selectTab(tab);
+    explorerMessage("");
+  } catch (error) { explorerMessage(`无法打开文件：${error}`, true); }
 }
 
 async function switchProject(p: Project) {
@@ -116,21 +181,23 @@ async function openProject(path: string) {
 }
 
 async function closeProject(p: Project) {
-  if (p.tabs.length && !(await ask(`关闭工程 ${base(p.path)}?其中 ${p.tabs.length} 个终端会被结束。`, { title: "tcli", kind: "warning" }))) return;
-  for (const t of [...p.tabs]) {
-    await invoke("pty_close", { id: t.id });
-    t.term.dispose();
-    t.el.remove();
-  }
-  p.tabs = [];
-  const i = projects.indexOf(p);
-  projects.splice(i, 1);
-  if (cur === p) {
-    cur = null;
-    const next = projects[Math.min(i, projects.length - 1)];
-    if (next) await switchProject(next);
-    else { renderProjects(); renderTabs(); save(); }
-  } else { renderProjects(); save(); }
+  if (closing) return;
+  closing = true;
+  try {
+    const terminals = p.tabs.filter(tab => tab.kind !== "file").length;
+    if (terminals && !(await ask(`关闭工程 ${base(p.path)}？其中 ${terminals} 个终端会被结束。`, { title: "tcli", kind: "warning" }))) return;
+    if (!(await confirmClose(fileEditors(p.tabs)))) return;
+    for (const t of [...p.tabs]) await disposeTab(t);
+    p.tabs = [];
+    const i = projects.indexOf(p);
+    projects.splice(i, 1);
+    if (cur === p) {
+      cur = null;
+      const next = projects[Math.min(i, projects.length - 1)];
+      if (next) await switchProject(next);
+      else { cwd = ""; $("cwd").textContent = ""; $("files").replaceChildren(); renderProjects(); renderTabs(); save(); }
+    } else { renderProjects(); save(); }
+  } finally { closing = false; }
 }
 
 async function pickProject() {
@@ -180,9 +247,17 @@ function renderTabs() {
 }
 
 // Only the visible tab needs refitting.
-new ResizeObserver(() => cur?.active?.fit.fit()).observe($("terms"));
+new ResizeObserver(() => {
+  const tab = cur?.active;
+  if (tab && tab.kind !== "file") tab.fit.fit();
+}).observe($("terms"));
 $("cwd").onclick = () => { if (cur) void loadDir(cur.path); };
 window.addEventListener("keydown", (ev) => {
+  if (ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === "s" && cur?.active?.kind === "file") {
+    ev.preventDefault();
+    void cur.active.editor.save();
+    return;
+  }
   if (!ev.ctrlKey || !ev.shiftKey) return;
   const p = cur;
   if (ev.key === "O") { ev.preventDefault(); void pickProject(); }
@@ -219,12 +294,24 @@ const parent = (p: string) => {
   return i <= 2 && /^[A-Za-z]:/.test(t) ? t.slice(0, i + 1) : t.slice(0, i) || t;
 };
 
+let directoryRequest = 0;
+function explorerMessage(message: string, error = false) {
+  $("explorer-message").textContent = message;
+  $("explorer-message").classList.toggle("error", error);
+}
 async function loadDir(path: string) {
+  const request = ++directoryRequest;
+  const project = cur;
   let entries: Entry[];
-  try { entries = await invoke<Entry[]>("list_dir", { path }); } catch { return; }
+  try { entries = await invoke<Entry[]>("list_dir", { path }); }
+  catch (error) { if (request === directoryRequest && cur === project) explorerMessage(`无法读取目录：${error}`, true); return; }
+  if (request !== directoryRequest || cur !== project) return;
+  explorerMessage("");
   cwd = path;
-  if (cur) cur.dir = path;
+  if (project) project.dir = path;
   $("cwd").textContent = path;
+  $("cwd").title = `${path}\n点击返回工程目录`;
+  $<HTMLInputElement>("file-filter").value = "";
   const ul = $("files");
   ul.replaceChildren();
   const up = document.createElement("li");
@@ -236,13 +323,29 @@ async function loadDir(path: string) {
     const li = document.createElement("li");
     li.textContent = (e.dir ? "▸ " : "  ") + e.name;
     if (e.dir) li.className = "dir";
-    li.onclick = () => (e.dir ? void loadDir(join(path, e.name)) : void insertPath(join(path, e.name)));
+    li.dataset.name = e.name.toLowerCase();
+    li.title = `${e.name}${e.dir ? "" : "\n点击打开 · Alt+点击插入路径到终端"}`;
+    li.tabIndex = 0;
+    const activate = (alt: boolean) => e.dir ? void loadDir(join(path, e.name)) : alt ? void insertPath(join(path, e.name)) : void openFile(join(path, e.name));
+    li.onclick = event => activate(event.altKey);
+    li.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); activate(event.altKey); } };
     ul.append(li);
   }
 }
+$("file-filter").oninput = () => {
+  const filter = $<HTMLInputElement>("file-filter").value.trim().toLowerCase();
+  for (const li of $("files").children) (li as HTMLElement).hidden = !!(li as HTMLElement).dataset.name && !(li as HTMLElement).dataset.name!.includes(filter);
+};
+$("refresh-files").onclick = () => { if (cwd) void loadDir(cwd); };
+$("up-directory").onclick = () => { if (cwd) void loadDir(parent(cwd)); };
+$("open-file").onclick = async () => {
+  if (!cur) return;
+  const path = await open({ directory: false, multiple: false, defaultPath: cwd || cur.path, title: "打开文件" });
+  if (typeof path === "string") await openFile(path);
+};
 async function insertPath(p: string) {
   const t = cur?.active;
-  if (!t) return;
+  if (!t || t.kind === "file") { explorerMessage("请先选择一个终端标签，再用 Alt+点击插入路径。"); return; }
   await invoke("pty_write", { id: t.id, data: p + " " });
   t.term.focus();
 }
@@ -303,7 +406,7 @@ function renderSnapshot(s: Snapshot) {
 }
 async function refresh() {
   if (document.visibilityState !== "visible") return;
-  renderSnapshot(await invoke<Snapshot>("sys_snapshot", { sort, limit: 60 }));
+  renderSnapshot(await invoke<Snapshot>("sys_snapshot", { sort, limit: 20 }));
 }
 for (const k of ["cpu", "mem"] as const) {
   $("s-" + k).onclick = () => {
@@ -314,9 +417,9 @@ for (const k of ["cpu", "mem"] as const) {
   };
 }
 // k kills the selected process, but only after a second confirming press.
-// Keys typed into the terminal are ignored: xterm focuses a hidden textarea.
+// Ignore editing controls and dialogs so typing cannot kill a process.
 window.addEventListener("keydown", async (e) => {
-  if (e.key !== "k" || selPid === null || document.activeElement?.tagName === "TEXTAREA") return;
+  if (e.key !== "k" || selPid === null || (e.target instanceof Element && e.target.closest("input, textarea, [contenteditable], dialog"))) return;
   const p = procs.find((x) => x.pid === selPid);
   if (!p) return;
   if (!armed) { armed = true; $("proc-msg").textContent = `再按 k 确认结束 ${p.name} (${p.pid})`; return; }
@@ -328,9 +431,22 @@ window.addEventListener("keydown", async (e) => {
 setInterval(refresh, 2000);
 void refresh();
 
+async function prepareToClose() {
+  if (closing) return false;
+  closing = true;
+  try { return await confirmClose(projects.flatMap(p => fileEditors(p.tabs))); }
+  finally { closing = false; }
+}
+void getCurrentWindow().onCloseRequested(async event => {
+  event.preventDefault();
+  if (await prepareToClose()) await getCurrentWindow().destroy();
+}).catch(error => explorerMessage(`无法启用窗口关闭保护：${error}`, true));
+window.addEventListener("beforeunload", event => {
+  if (projects.some(p => fileEditors(p.tabs).some(editor => editor.dirty || editor.busy))) event.preventDefault();
+});
 initDashboard(async () => {
   for (const p of projects) {
-    for (const tab of p.tabs) await invoke("pty_close", { id: tab.id });
+    for (const tab of p.tabs) if (tab.kind !== "file") await invoke("pty_close", { id: tab.id });
   }
-});
+}, prepareToClose);
 void start();

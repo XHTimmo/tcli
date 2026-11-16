@@ -22,18 +22,32 @@ const age = (time: string) => {
 };
 
 const BIRD = `<svg viewBox="0 0 32 20" aria-hidden="true"><path class="wing" d="M14 9 L6 1 L20 6 Z" fill="#2b2f38"/><path d="M4 11 Q12 5 22 8 L29 7 L24 11 Q20 17 10 16 L1 19 Z" fill="#e8eaee"/><path d="M1 19 L10 16 L14 12 Q8 12 4 11 Z" fill="#2b2f38"/><path d="M22 8 L29 7 L24 11 Z" fill="#2b2f38"/><circle cx="23" cy="8.6" r="1" fill="#fff"/></svg>`;
+type FlowState = "routing" | "waiting" | "answering" | "done" | "failed";
 function flow(agent: string) {
   const el = text("div", "", "route-flow");
   const node = (cls: string, label: string) => text("span", label, `flow-node ${cls}`);
-  const link = text("span", "", "flow-link");
-  const bird = text("span", "", "flow-bird");
-  bird.innerHTML = BIRD;
-  link.append(bird);
-  el.append(node("flow-pi", agent), link, node("flow-magpie", "magpie"), text("span", "", "flow-link"), node("flow-provider", ""));
+  const link = (cls: string) => {
+    const track = text("span", "", `flow-link ${cls}`);
+    track.setAttribute("aria-hidden", "true");
+    const bird = text("span", "", "flow-bird");
+    bird.innerHTML = BIRD;
+    track.append(text("span", "", "flow-track outbound"), text("span", "", "flow-track inbound"), bird);
+    return track;
+  };
+  el.append(node("flow-pi", agent), link("flow-request"), node("flow-magpie", "magpie"), link("flow-upstream"), node("flow-provider", ""));
+  return el;
+}
+function stages() {
+  const el = text("div", "", "route-stages");
+  for (const [state, label] of [["routing", "路由"], ["waiting", "等待首字"], ["answering", "接收响应"], ["done", "完成"]]) {
+    const step = text("span", label);
+    step.dataset.step = state;
+    el.append(step);
+  }
   return el;
 }
 
-export function initDashboard(closeTerminals: () => Promise<void>) {
+export function initDashboard(closeTerminals: () => Promise<void>, prepareToClose: () => Promise<boolean> = async () => true) {
   let fetching = false;
   let updateBusy = false;
   let pending: Update | null = null;
@@ -47,20 +61,34 @@ export function initDashboard(closeTerminals: () => Promise<void>) {
         card = text("li", "", "route-card");
         const head = text("div", "", "route-head");
         head.append(text("span", "", "route-chain"), text("span", ""));
-        card.append(head, flow(agent), text("div", "", "route-model"), text("div", "", "route-detail dim"), text("div", "", "route-folder dim"));
+        card.append(head, flow(agent), stages(), text("div", "", "route-model"), text("div", "", "route-detail dim"), text("div", "", "route-folder dim"), text("div", "", "route-candidates dim"));
         cardCache.set(r.id, card);
       }
-      const [head, fl, modelEl, detail, folder] = Array.from(card.children) as HTMLElement[];
+      const [head, fl, steps, modelEl, detail, folder, candidates] = Array.from(card.children) as HTMLElement[];
       const provider = r.order.find((p) => p.id === r.provider);
       const model = r.served || provider?.model || r.model;
-      const failed = r.status >= 400;
-      const state = failed ? `失败 ${r.status}` : r.done ? "已完成" : r.bytes ? "回答中…" : "连接中…";
+      const state: FlowState = r.status >= 400 ? "failed" : r.done ? "done" : r.bytes > 0 ? "answering" : r.provider ? "waiting" : "routing";
+      const labels: Record<FlowState, string> = { routing: "选择路由…", waiting: "等待首字…", answering: "响应回传中…", done: "已完成", failed: `失败 ${r.status}` };
+      if (card.dataset.state !== state) card.dataset.state = state;
       head.children[0].textContent = `${agent} → magpie`;
-      head.children[1].textContent = state;
-      head.children[1].className = failed ? "route-error" : r.done ? "dim" : "route-live";
-      fl.className = `route-flow ${failed ? "failed" : r.done ? "done" : r.bytes ? "live answering" : "live"}`;
+      head.children[1].textContent = labels[state];
+      head.children[1].className = state === "failed" ? "route-error" : state === "done" ? "dim" : "route-live";
       const providerName = provider?.name || r.provider || "等待路由";
-      fl.querySelector(".flow-provider")!.textContent = providerName;
+      const agentNode = fl.querySelector<HTMLElement>(".flow-pi")!;
+      agentNode.textContent = agent;
+      agentNode.title = agent;
+      const providerNode = fl.querySelector<HTMLElement>(".flow-provider")!;
+      providerNode.textContent = providerName;
+      providerNode.title = providerName;
+      fl.setAttribute("aria-label", `${agent} → magpie → ${providerName}，${labels[state]}`);
+      const activeStep = ["routing", "waiting", "answering", "done"].indexOf(state);
+      Array.from(steps.children).forEach((step, i) => {
+        step.className = i === activeStep ? "current" : i < activeStep ? "passed" : "";
+        if (i === activeStep) step.setAttribute("aria-current", "step");
+        else step.removeAttribute("aria-current");
+      });
+      steps.lastElementChild!.textContent = state === "failed" ? "失败" : "完成";
+      if (state === "failed") steps.lastElementChild!.className = "step-error";
       modelEl.textContent = model;
       modelEl.title = model;
       const details = [`${(r.bytes / 1024).toFixed(1)} KiB`, age(r.time)];
@@ -70,6 +98,9 @@ export function initDashboard(closeTerminals: () => Promise<void>) {
       folder.textContent = r.folder;
       folder.title = `${r.folder}\n会话 ${r.session}`;
       folder.hidden = !r.folder;
+      candidates.hidden = r.order.length < 2;
+      candidates.textContent = r.order.map((p, i) => `${i + 1}. ${p.name || p.id}${p.id === r.provider ? "（当前）" : ""}`).join(" → ");
+      candidates.title = `候选路由顺序：${candidates.textContent}`;
       return card;
     });
     const live = new Set(routes.map((r) => r.id));
@@ -86,11 +117,14 @@ export function initDashboard(closeTerminals: () => Promise<void>) {
     try {
       routes = await invoke<Route[]>("magpie_routes");
       $("magpie-status").textContent = "在线 · 127.0.0.1:3425";
+      $("magpie-status").title = "";
+      $("routes").classList.remove("offline");
       render();
     } catch (error) {
-      $("magpie-status").textContent = "未连接";
+      $("magpie-status").textContent = "未连接 · 等待重连";
       $("magpie-status").title = String(error);
-      $("routes").replaceChildren(text("li", "无法连接 Magpie，等待重连…", "dim"));
+      $("routes").classList.add("offline");
+      if (!routes.length) $("routes").replaceChildren(text("li", "无法连接 Magpie，等待重连…", "dim"));
     } finally { fetching = false; }
   }
   async function refreshUpdate() {
@@ -115,6 +149,12 @@ export function initDashboard(closeTerminals: () => Promise<void>) {
     button.textContent = "正在下载…";
     try {
       await pending.download();
+      if (!(await prepareToClose())) {
+        button.disabled = false;
+        button.textContent = "更新并重启";
+        updateBusy = false;
+        return;
+      }
       button.textContent = "正在安装…";
       await closeTerminals();
       await pending.install();
@@ -127,7 +167,10 @@ export function initDashboard(closeTerminals: () => Promise<void>) {
   };
   setInterval(() => void refreshRoutes(), 2000);
   setInterval(() => void refreshUpdate(), 30 * 60 * 1000);
-  document.addEventListener("visibilitychange", () => void refreshRoutes());
+  document.addEventListener("visibilitychange", () => {
+    $("routes").classList.toggle("paused", document.visibilityState !== "visible");
+    void refreshRoutes();
+  });
   void refreshRoutes();
   void refreshUpdate();
 }
