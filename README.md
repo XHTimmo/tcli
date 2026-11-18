@@ -32,7 +32,11 @@ npm run dev
 
 开发模式运行 `target/debug/tcli.exe`，修改 Rust 或 Cargo 配置会触发自动重启，适合调试，且不检查更新。日常任务请使用安装版。
 
-终端输入回归检查：`npm run test:terminal`（Node.js 22.13+）。覆盖复制、粘贴、组合键、输入法确认、异步粘贴与标签释放、OSC 52；该检查使用事件与剪贴板模拟，实际 WebView 鼠标和 ConPTY 行为仍需桌面验证。
+终端输入回归检查：`npm run test:terminal`（Node.js 22.13+）。覆盖复制、粘贴、组合键、输入法确认、异步粘贴与标签释放、OSC 52。
+
+Windows PTY 回归检查：`cargo test --manifest-path src-tauri/Cargo.toml --test conpty_mouse`。通过真实 PowerShell、Node.js 和 ConPTY 验证全屏鼠标模式、上下滚轮、拖选及模式恢复；不需要 pi 账号或模型请求。
+
+Windows 构建会自动下载固定版本的官方 `Microsoft.Windows.Console.ConPTY`，校验包和运行库的 SHA-256，并把 `conpty.dll`、`OpenConsole.exe` 及许可证放在程序目录、纳入安装包。首次构建需访问 NuGet，之后使用 `src-tauri/conpty/` 下已校验的缓存；可先运行 `node scripts/prepare-conpty.mjs` 准备依赖。版本与校验值在该脚本中维护。
 
 ## 文件浏览与编辑
 
@@ -50,7 +54,7 @@ PNG、JPEG、GIF、WebP、BMP、ICO、SVG 支持只读图片预览（不超过 1
 
 ## 终端复制、粘贴与 pi 交互
 
-tcli 按 pi 自身的设置启动界面（新版 pi 默认全屏），可在 pi 的 `/settings` 中切换全屏与普通滚屏模式。全屏模式的鼠标选区由 pi 处理，是否松开鼠标自动复制取决于 pi 的设置；按住 Shift 拖选可使用终端原生选区。
+tcli 按 pi 自身的设置启动界面（新版 pi 默认全屏），可在 pi 的 `/settings` 中切换全屏与普通滚屏模式。全屏模式下，滚轮按鼠标协议交给 pi，由 pi 控制对话或菜单滚动；鼠标选区也由 pi 处理，是否松开鼠标自动复制取决于 pi 的设置。按住 Shift 拖选可使用终端原生选区。Windows 使用随 tcli 分发的 ConPTY，避免系统旧版吞掉鼠标模式后将滚轮变成输入历史的上下键。
 
 - 终端原生选区：Ctrl+C、Ctrl+Shift+C 或 Ctrl+Insert 复制；无原生选区时 Ctrl+C 仍交给 pi／shell。
 - 右键、Ctrl+Shift+V 或 Shift+Insert：粘贴系统剪贴板文本，多行内容按终端的括号粘贴模式传入。

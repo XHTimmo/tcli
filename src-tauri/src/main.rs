@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pty;
+#[cfg(windows)]
+mod windows_pty;
 mod magpie;
 mod files;
 mod pi;

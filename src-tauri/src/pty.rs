@@ -25,6 +25,8 @@ pub fn pty_spawn(
     pi_path: Option<String>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
+    #[cfg(windows)]
+    crate::windows_pty::ensure_runtime()?;
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(err)?;

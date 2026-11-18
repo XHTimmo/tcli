@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "conpty/runtime/conpty.dll": "conpty.dll",
+      "conpty/runtime/OpenConsole.exe": "OpenConsole.exe",
+      "conpty/LICENSE": "CONPTY-LICENSE.txt"
+    }
+  }
+}
