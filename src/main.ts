@@ -1,3 +1,4 @@
+import { attachTerminalInput } from "./terminal-input";
 import { ensurePi } from "./pi";
 import { FileTree } from "./file-tree";
 import { explorerMode, matchesShortcut, openSettings, shortcutLabel } from "./settings";
@@ -15,7 +16,8 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 // ---- projects: a folder with terminal and file tabs ----
 interface TerminalTab {
   id: number; kind: "pi" | "shell"; project: Project;
-  term: Terminal; fit: FitAddon; el: HTMLElement; tabEl: HTMLElement;
+  term: Terminal; fit: FitAddon; el: HTMLElement; tabEl: HTMLElement; disposeInput: () => void;
+  ready: Promise<void>;
 }
 interface FileTab {
   id: number; kind: "file"; project: Project;
@@ -72,7 +74,8 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
   x.className = "x";
   x.textContent = "×";
   tabEl.append(t, x);
-  const tab: Tab = { id, kind, project: p, term, fit, el, tabEl };
+  const disposeInput = attachTerminalInput(term, el, kind, message => explorerMessage(message, true));
+  const tab: TerminalTab = { id, kind, project: p, term, fit, el, tabEl, disposeInput, ready: Promise.resolve() };
   tabEl.onclick = () => selectTab(tab);
   x.onclick = (ev) => { ev.stopPropagation(); void closeTab(tab); };
   p.tabs.push(tab);
@@ -80,11 +83,23 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
 
   const onData = new Channel<ArrayBuffer>();
   onData.onmessage = (buf) => term.write(new Uint8Array(buf));
-  term.onData((d) => void invoke("pty_write", { id, data: d }));
-  term.onResize(({ cols, rows }) => void invoke("pty_resize", { id, cols, rows }));
+  let writes = Promise.resolve();
+  const send = (data: string | number[]) => {
+    // Serialize IPC writes so paste, keystrokes and terminal replies retain their order.
+    writes = writes.then(() => tab.ready).then(() => invoke<void>("pty_write", { id, data }))
+      .catch(error => explorerMessage(`终端输入失败：${error}`, true));
+  };
+  term.onData(send);
+  term.onBinary(data => send(Array.from(data, c => c.charCodeAt(0) & 255)));
+  term.onResize(({ cols, rows }) => {
+    void tab.ready.then(() => invoke("pty_resize", { id, cols, rows }))
+      .catch(error => explorerMessage(`终端尺寸更新失败：${error}`, true));
+  });
+  tab.ready = invoke<void>("pty_spawn", { id, kind, cols: term.cols, rows: term.rows, cwd: dir, piPath, onData });
   try {
-    await invoke("pty_spawn", { id, kind, cols: term.cols, rows: term.rows, cwd: dir, piPath, onData });
+    await tab.ready;
   } catch (error) {
+    disposeInput();
     term.dispose();
     el.remove();
     p.tabs = p.tabs.filter(t => t !== tab);
@@ -123,7 +138,9 @@ let closing = false;
 async function disposeTab(tab: Tab) {
   if (tab.kind === "file") tab.editor.dispose();
   else {
+    await tab.ready.catch(() => {});
     await invoke("pty_close", { id: tab.id });
+    tab.disposeInput();
     tab.term.dispose();
     tab.el.remove();
   }
@@ -134,9 +151,10 @@ async function closeTab(tab: Tab) {
   try {
     if (!(await confirmClose(fileEditors([tab])))) return;
     const p = tab.project;
-    const i = p.tabs.indexOf(tab);
-    if (i < 0) return;
+    if (!p.tabs.includes(tab)) return;
     await disposeTab(tab);
+    const i = p.tabs.indexOf(tab);
+    if (i < 0) return; // A failed spawn may already have removed this tab.
     p.tabs.splice(i, 1);
     if (p.active === tab) p.active = p.tabs[Math.min(i, p.tabs.length - 1)] ?? null;
     showActive();
@@ -280,7 +298,7 @@ function updateShortcutHints() {
 updateShortcutHints();
 window.addEventListener("shortcuts-changed", () => { renderProjects(); updateShortcutHints(); armed = false; $("proc-msg").textContent = ""; });
 window.addEventListener("keydown", (ev) => {
-  if (ev.repeat || ev.isComposing || document.querySelector("dialog[open]")) return;
+  if (ev.repeat || ev.isComposing || ev.keyCode === 229 || document.querySelector("dialog[open]")) return;
   const p = cur;
   let run: (() => void) | undefined;
   if (matchesShortcut(ev, "settings")) run = openSettings;
@@ -490,7 +508,7 @@ window.addEventListener("blur", () => closeExplorerMenu());
 async function insertPath(p: string) {
   const t = cur?.active;
   if (!t || t.kind === "file") { explorerMessage("请先选择一个终端标签，再用 Alt+点击插入路径。"); return; }
-  await invoke("pty_write", { id: t.id, data: p + " " });
+  t.term.paste(p + " ");
   t.term.focus();
 }
 
@@ -590,7 +608,10 @@ window.addEventListener("beforeunload", event => {
 });
 initDashboard(async () => {
   for (const p of projects) {
-    for (const tab of p.tabs) if (tab.kind !== "file") await invoke("pty_close", { id: tab.id });
+    for (const tab of [...p.tabs]) if (tab.kind !== "file") {
+      await tab.ready.catch(() => {});
+      await invoke("pty_close", { id: tab.id });
+    }
   }
 }, prepareToClose);
 void start();

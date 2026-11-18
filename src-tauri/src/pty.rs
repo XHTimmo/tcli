@@ -41,20 +41,20 @@ pub fn pty_spawn(
             let mut c = CommandBuilder::new("powershell.exe");
             // Pass the selected path as data, never interpolate it into shell source.
             c.env("TCLI_PI_EXEC", path);
-            // Regular mode lets xterm manage scrollback under ConPTY.
-            c.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& $env:TCLI_PI_EXEC --tui-mode regular"]);
+            // Respect pi's configured TUI mode, including its fullscreen mouse selection.
+            c.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& $env:TCLI_PI_EXEC"]);
             c
         }
-        (_, false) => {
-            let mut c = CommandBuilder::new(crate::pi::resolve(pi_path)?);
-            c.args(["--tui-mode", "regular"]);
-            c
-        }
+        (_, false) => CommandBuilder::new(crate::pi::resolve(pi_path)?),
     };
     if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
         cmd.cwd(dir);
     }
     cmd.env("TERM", "xterm-256color");
+    cmd.env("TERM_PROGRAM", "tcli");
+    cmd.env("COLORTERM", "truecolor");
+    // xterm has no image addon; inherited outer-terminal identifiers can mislead pi.
+    cmd.env("PI_IMAGE_PROTOCOL", "none");
     // Make pi park the real cursor at its input position so the IME candidate window follows it.
     cmd.env("PI_HARDWARE_CURSOR", "1");
 
@@ -63,6 +63,8 @@ pub fn pty_spawn(
     let mut reader = pair.master.try_clone_reader().map_err(err)?;
     let writer = pair.master.take_writer().map_err(err)?;
 
+    // Register before output is forwarded: the frontend may immediately answer a query.
+    state.ptys.lock().map_err(err)?.insert(id, Pty { master: pair.master, writer, child });
     std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
         while let Ok(n) = reader.read(&mut buf) {
@@ -72,14 +74,25 @@ pub fn pty_spawn(
         }
     });
 
-    state.ptys.lock().map_err(err)?.insert(id, Pty { master: pair.master, writer, child });
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+pub enum PtyInput {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
 #[tauri::command]
-pub fn pty_write(state: State<App>, id: u32, data: String) -> Result<(), String> {
+pub fn pty_write(state: State<App>, id: u32, data: PtyInput) -> Result<(), String> {
+    let bytes = match data {
+        PtyInput::Text(text) => text.into_bytes(),
+        PtyInput::Bytes(bytes) => bytes,
+    };
     if let Some(p) = state.ptys.lock().map_err(err)?.get_mut(&id) {
-        p.writer.write_all(data.as_bytes()).map_err(err)?;
+        p.writer.write_all(&bytes).map_err(err)?;
+        p.writer.flush().map_err(err)?;
     }
     Ok(())
 }

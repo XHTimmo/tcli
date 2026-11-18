@@ -142,6 +142,7 @@ fn main() {
     rustls::crypto::ring::default_provider().install_default().expect("rustls crypto provider");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(App { ptys: Mutex::new(HashMap::new()), sys: Mutex::new(System::new().expect("sysinfo")) })
         .invoke_handler(tauri::generate_handler![
