@@ -55,6 +55,7 @@ pub fn pty_spawn(
     cmd.env("TERM", "xterm-256color");
     cmd.env("TERM_PROGRAM", "tcli");
     cmd.env("COLORTERM", "truecolor");
+    cmd.env("PI_HYPERLINKS", "1");
     // xterm has no image addon; inherited outer-terminal identifiers can mislead pi.
     cmd.env("PI_IMAGE_PROTOCOL", "none");
     // Make pi park the real cursor at its input position so the IME candidate window follows it.

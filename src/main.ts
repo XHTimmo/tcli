@@ -7,6 +7,7 @@ import type { FileEditor, FileDocument } from "./editor";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import "@xterm/xterm/css/xterm.css";
@@ -52,7 +53,19 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
   const el = document.createElement("div");
   el.className = "pane hidden";
   $("terms").append(el);
-  const term = new Terminal({
+  const openWebLink = (event: MouseEvent, url: string) => {
+    if (event.button === 0 && !term.hasSelection()) {
+      void invoke("open_web_url", { url }).catch(error => explorerMessage(`无法打开链接：${error}`, true));
+    }
+  };
+  const term: Terminal = new Terminal({
+    linkHandler: {
+      activate(event, url) {
+        // Fullscreen pi handles OSC 8 clicks through the PTY mouse protocol.
+        if (kind === "pi" && term.modes.mouseTrackingMode !== "none" && !event.shiftKey) return;
+        openWebLink(event, url);
+      },
+    },
     fontFamily: '"Cascadia Mono", Consolas, monospace',
     fontSize: 13,
     scrollback: 3000,
@@ -61,6 +74,7 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  term.loadAddon(new WebLinksAddon(openWebLink));
   term.open(el);
 
   const tabEl = document.createElement("div");

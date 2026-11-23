@@ -140,6 +140,28 @@ mod tests {
     }
 }
 
+#[tauri::command]
+async fn open_web_url(url: String) -> Result<(), String> {
+    let url = tauri::Url::parse(&url).map_err(err)?;
+    if !matches!(url.scheme(), "https" | "http") || url.host().is_none() {
+        return Err("仅支持 HTTP 和 HTTPS 链接".into());
+    }
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        let mut command = {
+            let mut cmd = std::process::Command::new("rundll32.exe");
+            cmd.arg("url.dll,FileProtocolHandler");
+            cmd
+        };
+        #[cfg(target_os = "macos")]
+        let mut command = std::process::Command::new("open");
+        #[cfg(all(not(windows), not(target_os = "macos")))]
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(url.as_str()).status()
+    }).await.map_err(err)?.map_err(err)?;
+    if status.success() { Ok(()) } else { Err(format!("打开链接失败（{status}）")) }
+}
+
 fn main() {
     rustls::crypto::ring::default_provider().install_default().expect("rustls crypto provider");
     tauri::Builder::default()
@@ -149,7 +171,7 @@ fn main() {
         .manage(App { ptys: Mutex::new(HashMap::new()), sys: Mutex::new(System::new().expect("sysinfo")) })
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn, pty::pty_write, pty::pty_resize, pty::pty_close, list_dir, sys_snapshot, kill_process, home_dir,
-            pi::detect_pi, pi::install_pi,
+            open_web_url, pi::detect_pi, pi::install_pi,
             magpie::magpie_routes, files::read_file, files::save_file, files::open_in_explorer
         ])
         .run(tauri::generate_context!())
