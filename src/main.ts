@@ -1,10 +1,12 @@
 import { attachTerminalInput } from "./terminal-input";
+import { wslHome, wslLocation } from "./wsl";
 import { ensurePi } from "./pi";
 import { FileTree } from "./file-tree";
 import { explorerMode, matchesShortcut, openSettings, shortcutLabel } from "./settings";
 import { initDashboard } from "./dashboard";
 import type { FileEditor, FileDocument } from "./editor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -19,14 +21,18 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 interface TerminalTab {
   id: number; kind: "pi" | "shell"; project: Project;
   term: Terminal; fit: FitAddon; el: HTMLElement; tabEl: HTMLElement; disposeInput: () => void;
-  ready: Promise<void>;
+  ready: Promise<void>; dir: string; sessionId?: string; history?: string;
 }
 interface FileTab {
   id: number; kind: "file"; project: Project;
   editor: FileEditor; el: HTMLElement; tabEl: HTMLElement;
 }
 type Tab = TerminalTab | FileTab;
+type SavedTab = { kind: "file"; path: string } | { kind: "pi" | "shell"; dir: string; sessionId?: string; history?: string };
+interface SavedProject { path: string; dir: string; tabs: SavedTab[]; active: number }
 interface Project {
+  pending?: SavedProject;
+  restoring?: boolean;
   path: string; tabs: Tab[]; active: Tab | null;
   dir: string; // directory the explorer last showed for this project
   chip: HTMLElement;
@@ -39,13 +45,27 @@ const base = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 const STORE = "tcli.projects";
 
 function save() {
-  localStorage.setItem(STORE, JSON.stringify({ paths: projects.map((p) => p.path), cur: cur?.path }));
+  const workspaces = projects.map(p => p.pending ?? {
+    path: p.path, dir: p.dir, active: p.active ? p.tabs.indexOf(p.active) : -1,
+    tabs: p.tabs.map(t => t.kind === "file" ? { kind: t.kind, path: t.editor.path } :
+      { kind: t.kind, dir: t.dir, sessionId: t.sessionId, history: t.history }),
+  });
+  const serialized = () => JSON.stringify({ workspaces, cur: cur?.path });
+  try { localStorage.setItem(STORE, serialized()); }
+  catch (error) {
+    for (const workspace of workspaces) for (const tab of workspace.tabs) {
+      if (tab.kind === "shell") delete tab.history;
+    }
+    try { localStorage.setItem(STORE, serialized()); }
+    catch { explorerMessage(`无法保存窗口缓存：${error}`, true); }
+  }
 }
 
-async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
+async function openTab(p: Project, kind: "pi" | "shell", dir: string, saved?: Extract<SavedTab, { dir: string }>) {
+  const wsl = wslLocation(dir);
   let piPath: string | null = null;
   try {
-    if (kind === "pi") {
+    if (kind === "pi" && !wsl) {
       piPath = await ensurePi();
       if (!piPath || !projects.includes(p)) return;
     }
@@ -90,11 +110,13 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
   x.textContent = "×";
   tabEl.append(t, x);
   const disposeInput = attachTerminalInput(term, el, kind, message => explorerMessage(message, true));
-  const tab: TerminalTab = { id, kind, project: p, term, fit, el, tabEl, disposeInput, ready: Promise.resolve() };
+  const sessionId = kind === "pi" ? saved?.sessionId ?? crypto.randomUUID() : undefined;
+  const tab: TerminalTab = { id, kind, project: p, dir, sessionId, history: saved?.history, term, fit, el, tabEl, disposeInput, ready: Promise.resolve() };
+  if (tab.history) term.write(tab.history + "\r\n── 上次终端输出结束 ──\r\n");
   tabEl.onclick = () => selectTab(tab);
   x.onclick = (ev) => { ev.stopPropagation(); void closeTab(tab); };
   p.tabs.push(tab);
-  selectTab(tab);
+  if (cur === p) selectTab(tab);
 
   const onData = new Channel<ArrayBuffer>();
   onData.onmessage = (buf) => term.write(new Uint8Array(buf));
@@ -110,7 +132,7 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
     void tab.ready.then(() => invoke("pty_resize", { id, cols, rows }))
       .catch(error => explorerMessage(`终端尺寸更新失败：${error}`, true));
   });
-  tab.ready = invoke<void>("pty_spawn", { id, kind, cols: term.cols, rows: term.rows, cwd: dir, piPath, onData });
+  tab.ready = invoke<void>("pty_spawn", { id, kind, cols: term.cols, rows: term.rows, cwd: dir, piPath, wsl, sessionId: wsl && sessionId ? wslLocation(sessionId)?.path ?? sessionId : sessionId, onData });
   try {
     await tab.ready;
   } catch (error) {
@@ -121,11 +143,14 @@ async function openTab(p: Project, kind: "pi" | "shell", dir: string) {
     if (p.active === tab) p.active = p.tabs.at(-1) ?? null;
     showActive();
     explorerMessage(`无法启动 ${kind}：${error}。可在设置中检查 pi 路径。`, true);
+    return;
   }
+  return tab;
 }
 
 /** Show only the current project's active tab; every other pane stays hidden. */
 function showActive() {
+  save();
   const shown = cur?.active ?? null;
   for (const p of projects) {
     for (const t of p.tabs) {
@@ -177,9 +202,8 @@ async function closeTab(tab: Tab) {
 }
 
 let fileRequest = 0;
-async function openFile(path: string) {
+async function openFile(path: string, project = cur) {
   const request = ++fileRequest;
-  const project = cur;
   if (!project) return;
   explorerMessage("正在读取文件…");
   try {
@@ -211,17 +235,37 @@ async function openFile(path: string) {
     $("terms").append(editor.el);
     project.tabs.push(tab);
     if (cur === project && request === fileRequest) selectTab(tab);
+    save();
     explorerMessage("");
+    return tab;
   } catch (error) { explorerMessage(`无法打开文件：${error}`, true); }
 }
 
 async function switchProject(p: Project) {
   cur = p;
+  cwd = p.dir;
   save();
   renderProjects();
   showActive();
   void loadDir(p.dir);
-  if (!p.tabs.length) await openTab(p, "pi", p.path);
+  if (p.restoring) return;
+  if (p.pending) {
+    p.restoring = true;
+    const snapshot = p.pending;
+    let active: Tab | undefined;
+    try {
+      for (const [i, item] of snapshot.tabs.entries()) {
+        if (!projects.includes(p)) break;
+        const tab = item.kind === "file" ? await openFile(item.path, p) : await openTab(p, item.kind, item.dir, item);
+        if (i === snapshot.active) active = tab;
+      }
+      p.active = active ?? p.tabs.at(-1) ?? null;
+    } finally {
+      delete p.pending;
+      delete p.restoring;
+      showActive();
+    }
+  } else if (!p.tabs.length) await openTab(p, "pi", p.path);
 }
 
 async function openProject(path: string) {
@@ -253,9 +297,12 @@ async function closeProject(p: Project) {
   } finally { closing = false; }
 }
 
-async function pickProject() {
-  const dir = await open({ directory: true, multiple: false, defaultPath: cwd || undefined, title: "打开工程文件夹" });
-  if (typeof dir === "string") await openProject(dir);
+async function pickProject(inWsl = false) {
+  try {
+    const defaultPath = inWsl ? await wslHome() : cwd || undefined;
+    const dir = await open({ directory: true, multiple: false, defaultPath, title: inWsl ? "打开 WSL 工程文件夹" : "打开工程文件夹" });
+    if (typeof dir === "string") await openProject(dir);
+  } catch (error) { explorerMessage(`无法打开工程：${error}`, true); }
 }
 
 function renderProjects() {
@@ -278,7 +325,15 @@ function renderProjects() {
     c.replaceChildren(t, x);
     c.onclick = () => void switchProject(p);
   }
-  $("projects").replaceChildren(...projects.map((p) => p.chip), add);
+  const nav = $("projects");
+  nav.replaceChildren(...projects.map((p) => p.chip), add);
+  if (navigator.userAgent.includes("Windows")) {
+    const wsl = document.createElement("button");
+    wsl.className = "add";
+    wsl.textContent = "+ WSL 工程";
+    wsl.onclick = () => void pickProject(true);
+    nav.append(wsl);
+  }
 }
 
 function renderTabs() {
@@ -292,10 +347,27 @@ function renderTabs() {
     b.onclick = () => void openTab(p, kind, cwd || p.path);
     return b;
   };
+  const resume = document.createElement("button");
+  resume.className = "add";
+  resume.textContent = "恢复 pi";
+  resume.title = "选择已有的 pi 会话文件";
+  resume.onclick = async () => {
+    const dir = p.dir;
+    try {
+      const wsl = wslLocation(dir);
+      const home = wsl ? await wslHome(wsl.distribution) : await homeDir();
+      const file = await open({ defaultPath: join(home, ".pi/agent/sessions"), filters: [{ name: "pi 会话", extensions: ["jsonl"] }] });
+      if (wsl && typeof file === "string" && wslLocation(file)?.distribution.toLowerCase() !== wsl.distribution.toLowerCase()) {
+        explorerMessage(`请选择 ${wsl.distribution} 中的 pi 会话文件`, true);
+        return;
+      }
+      if (typeof file === "string" && projects.includes(p)) await openTab(p, "pi", dir, { kind: "pi", dir, sessionId: file });
+    } catch (error) { explorerMessage(`无法恢复 pi 会话：${error}`, true); }
+  };
   $("tabs").replaceChildren(
     ...p.tabs.map((t) => t.tabEl),
     add("+ pi", "在资源管理器当前目录新开 pi", "pi"),
-    add("+ shell", "在资源管理器当前目录新开 PowerShell", "shell"),
+    add("+ shell", "在资源管理器当前目录新开 Shell", "shell"), resume,
   );
 }
 
@@ -333,11 +405,12 @@ window.addEventListener("keydown", (ev) => {
 
 async function start() {
   // Restore the last session's projects. Terminals are only spawned when a project is first shown.
-  let saved: { paths?: string[]; cur?: string } = {};
+  let saved: { paths?: string[]; workspaces?: SavedProject[]; cur?: string } = {};
   try { saved = JSON.parse(localStorage.getItem(STORE) ?? "{}"); } catch { /* ignore */ }
-  for (const path of saved.paths ?? []) {
+  for (const path of saved.workspaces?.map(p => p.path) ?? saved.paths ?? []) {
     try { await invoke("list_dir", { path }); } catch { continue; }
-    projects.push({ path, tabs: [], active: null, dir: path, chip: document.createElement("div") });
+    const pending = saved.workspaces?.find(p => p.path === path);
+    projects.push({ path, tabs: [], active: null, dir: pending?.dir || path, pending, chip: document.createElement("div") });
   }
   if (!projects.length) {
     await openProject(await invoke<string>("home_dir"));
@@ -351,6 +424,8 @@ interface Entry { name: string; dir: boolean }
 const sep = (p: string) => (p.includes("\\") ? "\\" : "/");
 const join = (a: string, b: string) => a.replace(/[\\/]$/, "") + sep(a) + b;
 const parent = (p: string) => {
+  const location = wslLocation(p);
+  if (location?.path === "/") return p;
   const t = p.replace(/[\\/]+$/, "");
   const i = Math.max(t.lastIndexOf("\\"), t.lastIndexOf("/"));
   return i <= 2 && /^[A-Za-z]:/.test(t) ? t.slice(0, i + 1) : t.slice(0, i) || t;
@@ -405,7 +480,7 @@ async function loadDir(path: string, preserveFilter = false) {
   if (request !== directoryRequest || cur !== project) return;
   explorerMessage("");
   cwd = path;
-  if (project) project.dir = path;
+  if (project) { project.dir = path; save(); }
   $("cwd").textContent = path;
   $("cwd").title = `${path}\n点击返回工程目录`;
   ul.replaceChildren();
@@ -568,6 +643,9 @@ window.addEventListener("blur", () => closeExplorerMenu());
 async function insertPath(p: string) {
   const t = cur?.active;
   if (!t || t.kind === "file") { explorerMessage("请先选择一个终端标签，再用 Alt+点击插入路径。"); return; }
+  const terminal = wslLocation(t.dir);
+  const file = wslLocation(p);
+  if (terminal && file && terminal.distribution.toLowerCase() === file.distribution.toLowerCase()) p = file.path;
   t.term.paste(p + " ");
   t.term.focus();
 }
@@ -656,7 +734,20 @@ void refresh();
 async function prepareToClose() {
   if (closing) return false;
   closing = true;
-  try { return await confirmClose(projects.flatMap(p => fileEditors(p.tabs))); }
+  try {
+    if (!await confirmClose(projects.flatMap(p => fileEditors(p.tabs)))) return false;
+    for (const p of projects) for (const tab of p.tabs) {
+      if (tab.kind !== "shell") continue;
+      const buffer = tab.term.buffer.normal;
+      const lines: string[] = [];
+      for (let i = Math.max(0, buffer.length - 200); i < buffer.length; i++) {
+        lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
+      }
+      tab.history = lines.join("\r\n").trimEnd().slice(-16_384);
+    }
+    save();
+    return true;
+  }
   finally { closing = false; }
 }
 void getCurrentWindow().onCloseRequested(async event => {

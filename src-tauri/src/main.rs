@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pty;
+mod wsl;
 #[cfg(windows)]
 mod windows_pty;
 mod magpie;
@@ -171,7 +172,7 @@ fn main() {
         .manage(App { ptys: Mutex::new(HashMap::new()), sys: Mutex::new(System::new().expect("sysinfo")) })
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn, pty::pty_write, pty::pty_resize, pty::pty_close, list_dir, sys_snapshot, kill_process, home_dir,
-            open_web_url, pi::detect_pi, pi::install_pi,
+            wsl::wsl_home, open_web_url, pi::detect_pi, pi::install_pi,
             magpie::magpie_routes, files::read_file, files::save_file, files::copy_dropped_file, files::open_in_explorer
         ])
         .run(tauri::generate_context!())

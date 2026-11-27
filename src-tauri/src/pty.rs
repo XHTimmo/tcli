@@ -22,7 +22,9 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    wsl: Option<crate::wsl::Location>,
     pi_path: Option<String>,
+    session_id: Option<String>,
     on_data: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
     #[cfg(windows)]
@@ -31,25 +33,43 @@ pub fn pty_spawn(
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(err)?;
 
-    let mut cmd = match (kind.as_str(), cfg!(windows)) {
-        ("shell", true) => {
+    let mut cmd = match (kind.as_str(), cfg!(windows), &wsl) {
+        (_, true, Some(location)) => location.command(&kind, session_id.as_deref()),
+        ("shell", true, None) => {
             let mut c = CommandBuilder::new("powershell.exe");
             c.arg("-NoLogo");
             c
         }
-        ("shell", false) => CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "sh".into())),
-        (_, true) => {
+        ("shell", false, _) => CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "sh".into())),
+        (_, true, None) => {
             let path = crate::pi::resolve(pi_path)?;
             let mut c = CommandBuilder::new("powershell.exe");
             // Pass the selected path as data, never interpolate it into shell source.
             c.env("TCLI_PI_EXEC", path);
             // Respect pi's configured TUI mode, including its fullscreen mouse selection.
-            c.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "& $env:TCLI_PI_EXEC"]);
+            let script = if let Some(id) = &session_id {
+                c.env("TCLI_PI_SESSION", id);
+                if id.ends_with(".jsonl") {
+                    "& $env:TCLI_PI_EXEC --session $env:TCLI_PI_SESSION"
+                } else {
+                    "& $env:TCLI_PI_EXEC --session-id $env:TCLI_PI_SESSION"
+                }
+            } else {
+                "& $env:TCLI_PI_EXEC"
+            };
+            c.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]);
             c
         }
-        (_, false) => CommandBuilder::new(crate::pi::resolve(pi_path)?),
+        (_, false, _) => {
+            let mut c = CommandBuilder::new(crate::pi::resolve(pi_path)?);
+            if let Some(id) = &session_id {
+                let flag = if id.ends_with(".jsonl") { "--session" } else { "--session-id" };
+                c.args([flag, id.as_str()]);
+            }
+            c
+        }
     };
-    if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
+    if let Some(dir) = cwd.filter(|d| !d.is_empty() && wsl.is_none()) {
         cmd.cwd(dir);
     }
     cmd.env("TERM", "xterm-256color");
