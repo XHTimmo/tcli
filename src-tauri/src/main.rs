@@ -172,7 +172,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn, pty::pty_write, pty::pty_resize, pty::pty_close, list_dir, sys_snapshot, kill_process, home_dir,
             open_web_url, pi::detect_pi, pi::install_pi,
-            magpie::magpie_routes, files::read_file, files::save_file, files::open_in_explorer
+            magpie::magpie_routes, files::read_file, files::save_file, files::copy_dropped_file, files::open_in_explorer
         ])
         .run(tauri::generate_context!())
         .expect("failed to run tcli");

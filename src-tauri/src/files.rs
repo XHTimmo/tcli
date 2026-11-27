@@ -113,6 +113,28 @@ pub fn open_in_explorer(path: String) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_into_directory(source: &Path, directory: &Path) -> Result<(), String> {
+    let name = source.file_name().ok_or("文件名无效")?;
+    if !fs::metadata(source).map_err(crate::err)?.is_file() {
+        return Err("仅支持拖入普通文件".into());
+    }
+    let target = directory.join(name);
+    if target.try_exists().map_err(crate::err)? {
+        return Err("目标目录已有同名文件或目录".into());
+    }
+    let mut input = File::open(source).map_err(crate::err)?;
+    let mut temp = tempfile::NamedTempFile::new_in(directory).map_err(crate::err)?;
+    std::io::copy(&mut input, &mut temp).map_err(crate::err)?;
+    temp.persist_noclobber(target).map_err(crate::err)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_dropped_file(source: PathBuf, directory: PathBuf) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || copy_into_directory(&source, &directory))
+        .await.map_err(crate::err)?
+}
+
 #[tauri::command]
 pub fn read_file(path: String) -> Result<FileDocument, String> {
     read_document(Path::new(&path))
@@ -189,6 +211,21 @@ mod tests {
         assert!(read_document(&path).is_err());
         assert!(save_document(&path, "new", "old").is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn drop_copies_binary_file_and_preserves_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("目标");
+        fs::create_dir(&dest).unwrap();
+        let source = dir.path().join("文件.bin");
+        fs::write(&source, [0, 255]).unwrap();
+        copy_into_directory(&source, &dest).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), [0, 255]);
+        fs::write(&source, [1]).unwrap();
+        assert!(copy_into_directory(&source, &dest).is_err());
+        assert_eq!(fs::read(dest.join("文件.bin")).unwrap(), [0, 255]);
+        assert!(copy_into_directory(&dest, dir.path()).is_err());
     }
 
     #[test]

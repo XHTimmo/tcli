@@ -4,6 +4,7 @@ import { FileTree } from "./file-tree";
 import { explorerMode, matchesShortcut, openSettings, shortcutLabel } from "./settings";
 import { initDashboard } from "./dashboard";
 import type { FileEditor, FileDocument } from "./editor";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -365,7 +366,7 @@ function explorerMessage(message: string, error = false) {
   $("explorer-message").textContent = message;
   $("explorer-message").classList.toggle("error", error);
 }
-async function loadDir(path: string) {
+async function loadDir(path: string, preserveFilter = false) {
   closeExplorerMenu();
   const request = ++directoryRequest;
   const project = cur;
@@ -373,10 +374,11 @@ async function loadDir(path: string) {
   tree = null;
   const treeMode = explorerMode() === "tree";
   const ul = $("files");
+  delete ul.dataset.dropDirectory;
   ul.setAttribute("role", treeMode ? "tree" : "list");
   ul.setAttribute("aria-label", treeMode ? "工程文件树" : "目录文件列表");
   const filter = $<HTMLInputElement>("file-filter");
-  filter.value = "";
+  if (!preserveFilter) filter.value = "";
   filter.placeholder = treeMode ? "筛选已加载的文件…" : "筛选当前目录…";
   if (treeMode && project) {
     path = project.path;
@@ -384,6 +386,7 @@ async function loadDir(path: string) {
     $("cwd").textContent = path;
     $("cwd").title = `${path}\n工程文件树 · 点击刷新`;
     ul.replaceChildren();
+    ul.dataset.dropDirectory = path;
     explorerMessage("");
     let expanded = expandedDirectories.get(project);
     if (!expanded) { expanded = new Set(); expandedDirectories.set(project, expanded); }
@@ -391,6 +394,7 @@ async function loadDir(path: string) {
       (file, alt) => { if (alt) void insertPath(file); else void openFile(file); },
       message => explorerMessage(message, true));
     tree = currentTree;
+    currentTree.setFilter(filter.value);
     try { await currentTree.load(path); }
     catch (error) { if (request === directoryRequest && cur === project) explorerMessage(`无法读取目录：${error}`, true); }
     return;
@@ -404,8 +408,8 @@ async function loadDir(path: string) {
   if (project) project.dir = path;
   $("cwd").textContent = path;
   $("cwd").title = `${path}\n点击返回工程目录`;
-  $<HTMLInputElement>("file-filter").value = "";
   ul.replaceChildren();
+  ul.dataset.dropDirectory = path;
   const up = document.createElement("li");
   up.textContent = "..";
   up.className = "dir";
@@ -418,6 +422,7 @@ async function loadDir(path: string) {
     li.textContent = (e.dir ? "▸ " : "  ") + e.name;
     if (e.dir) li.className = "dir";
     li.dataset.name = e.name.toLowerCase();
+    li.hidden = !li.dataset.name.includes(filter.value.trim().toLowerCase());
     li.dataset.path = join(path, e.name);
     li.dataset.dir = String(e.dir);
     li.title = `${e.name}${e.dir ? "" : "\n点击打开 · Alt+点击插入路径到终端"}`;
@@ -433,6 +438,47 @@ $("file-filter").oninput = () => {
   if (tree) { tree.setFilter(filter); return; }
   for (const li of $("files").children) (li as HTMLElement).hidden = !!(li as HTMLElement).dataset.name && !(li as HTMLElement).dataset.name!.includes(filter);
 };
+async function copyDroppedFiles(paths: string[], directory: string) {
+  const project = cur;
+  if (!project) return;
+  const view = cwd;
+  const failures: string[] = [];
+  explorerMessage(`正在复制 ${paths.length} 个文件到 ${directory}…`);
+  for (const source of paths) {
+    try { await invoke("copy_dropped_file", { source, directory }); }
+    catch (error) { failures.push(`${base(source)}（${error}）`); }
+  }
+  if (cur !== project || cwd !== view) return;
+  const copied = paths.length - failures.length;
+  if (copied) {
+    if (tree && directory !== view) expandedDirectories.get(project)?.add(directory);
+    await loadDir(view, true);
+  }
+  if (cur === project && cwd === view) {
+    const details = failures.length ? `。${failures.length} 项未复制：${failures.join("、")}` : "";
+    explorerMessage(`已复制 ${copied} 个文件到 ${directory}${details}`, failures.length > 0);
+  }
+}
+
+let highlightedDropTarget: HTMLElement | null = null;
+void getCurrentWebview().onDragDropEvent(({ payload }) => {
+  highlightedDropTarget?.classList.remove("drop-target");
+  highlightedDropTarget = null;
+  if (payload.type === "leave" || !cur || !cwd || $("files").dataset.dropDirectory !== cwd) return;
+  const { x, y } = payload.position;
+  const hit = document.elementFromPoint(x / window.devicePixelRatio, y / window.devicePixelRatio);
+  if (!hit?.closest("#files, #cwd")) return;
+  const row = hit.closest<HTMLElement>("li[data-path]");
+  const directory = row?.dataset.dir === "true" ? row.dataset.path! : row?.dataset.parent || cwd;
+  if (payload.type === "drop") {
+    if (payload.paths.length) void copyDroppedFiles(payload.paths, directory);
+    return;
+  }
+  highlightedDropTarget = row?.dataset.dir === "true" ? row :
+    $("files").querySelector<HTMLElement>(`li[data-dir="true"][data-path="${CSS.escape(directory)}"]`) || $("cwd");
+  highlightedDropTarget.classList.add("drop-target");
+}).catch(error => explorerMessage(`无法启用拖入复制：${error}`, true));
+
 async function revealInExplorer(path: string) {
   try { await invoke("open_in_explorer", { path }); }
   catch (error) { explorerMessage(`无法打开资源管理器：${error}`, true); }

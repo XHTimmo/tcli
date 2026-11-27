@@ -79,6 +79,7 @@ export class FileTree {
         row.className = `tree-row${node.dir ? " dir" : ""}${node.path === this.selected ? " sel" : ""}`;
         row.style.paddingLeft = `${8 + depth * 16}px`;
         row.dataset.path = node.path;
+        if (node.parent) row.dataset.parent = node.parent.path;
         row.dataset.dir = String(node.dir);
         row.dataset.name = node.name.toLowerCase();
         row.setAttribute("role", "treeitem");
